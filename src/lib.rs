@@ -187,6 +187,7 @@ pub struct BetContract;
 
 #[contractimpl]
 impl BetContract {
+    // create a new bet
     pub fn create_bet(
         env: Env,
         token: BytesN<32>,
@@ -214,7 +215,9 @@ impl BetContract {
         bet_id
     }
 
-    // deposit shares into the vault: mints the vault shares to "from"
+    // place a new bet
+    // bet owner is not allowed to place a bet
+    // bet status must be open
     pub fn place_bet(env: Env, token: BytesN<32>,
         bet_id: u32, bet_result: BetResult, amount: BigInt)  {
 
@@ -256,7 +259,9 @@ impl BetContract {
         transfer_from_account_to_contract(&env, &token, &from_id, &amount);
     }
 
-
+    // provide bet result and transfer gain to winners
+    // only bet owner can call this function
+    // bet status must be close
     pub fn bet_result(env: Env, bet_id: u32, bet_result: BetResult) {
 
         if  !bet_exists(&env, bet_id)  {
@@ -279,6 +284,7 @@ impl BetContract {
  
         update_winners_balance(&env, &bet.token, &winners, &total_winning_bet_amount, &total_losing_bet_amount);
 
+        Self::set_status(env.clone(), bet_id, BetStatus::Complete);
     }
 
     pub fn get_status(env: Env, bet_id: u32) -> BetStatus {

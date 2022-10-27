@@ -195,6 +195,12 @@ fn test() {
         test.token.balance(&test.contract_id),
         BigInt::from_u32(&test.env, 0)
     );
+
+    // bet status should now be complete
+    assert_eq!(
+        test.contract.get_status(&bet_id), BetStatus::Complete
+    );
+    
 }
 
 /* 
