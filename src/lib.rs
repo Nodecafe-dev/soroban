@@ -1,12 +1,20 @@
 #![no_std]
 
-use soroban_sdk::{contracterror, contractimpl, contracttype, vec, panic_error, symbol, Address, BigInt, Env, Symbol, Vec};
+use soroban_sdk::{contracterror, contractimpl, contracttype, vec, panic_error, symbol, Address, BigInt, BytesN, Env, Symbol, Vec};
+
+mod token {
+    soroban_sdk::contractimport!(file = "./soroban_token_spec.wasm");
+}
+
+use token::{Identifier, Signature};
 
 #[contracterror]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Error {
     BetNotFound = 1,
-    InvalidBetStatus = 2
+    InvalidBetStatus = 2,
+    BetOwnerNotFound = 3,
+    BetActionNotAllowed = 4
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -36,9 +44,10 @@ pub struct Bettor {
 #[contracttype]
 #[derive(Clone)]
 pub struct Bet {
+    pub token: BytesN<32>,
     pub status: BetStatus,
     pub team_a: Symbol,
-    pub team_b: Symbol,
+    pub team_b: Symbol
 }
 
 #[contracttype]
@@ -53,17 +62,12 @@ pub enum DataKey {
 
 const BET_ID: Symbol = symbol!("BET_ID");
 
-/*pub trait BetContractTrait {
-    fn init_bet(
-        e: Env,
-        admin: Identifier,
-    ) -> Identifier;
-
-    fn place_bet(e: Env, from: Identifier);
-
-    fn bet_result(e: Env, admin: Identifier);
-
-}*/
+fn address_to_id(address: Address) -> Identifier {
+    match address {
+        Address::Account(a) => Identifier::Account(a),
+        Address::Contract(c) => Identifier::Contract(c),
+    }
+}
 
 fn bet_exists(env: &Env, bet_id: u32) -> bool {
     env.data().has(DataKey::Bet(bet_id))    
@@ -71,16 +75,18 @@ fn bet_exists(env: &Env, bet_id: u32) -> bool {
 
 fn get_bet(env: &Env,bet_id: u32) -> Bet {
 
+    if  !bet_exists(&env, bet_id)  {
+        panic_error!(&env, Error::BetNotFound);
+    }
+
     let bet = env.data()
-        .get_unchecked(DataKey::Bet((bet_id)))
+        .get_unchecked(DataKey::Bet(bet_id))
         .unwrap(); 
 
     bet
 }
 
-
 fn get_bet_id(env: &Env) -> u32 {
-
     let mut bet_id = 
         env.data()
             .get(BET_ID)
@@ -92,6 +98,19 @@ fn get_bet_id(env: &Env) -> u32 {
     bet_id
 }
 
+fn get_bet_owner_id(env: &Env, bet_id: u32) -> Address {
+
+    if !env.data().has(DataKey::BetOWner(bet_id))  {
+        panic_error!(&env, Error::BetOwnerNotFound);
+    }   
+
+    let owner_id: Address = 
+        env.data()
+            .get_unchecked(DataKey::BetOWner(bet_id))
+            .unwrap();
+    owner_id
+}
+
 fn get_bettors(env: &Env, bet_id: u32) -> Vec<Bettor> {
     let bettors = 
         env.data()
@@ -100,24 +119,68 @@ fn get_bettors(env: &Env, bet_id: u32) -> Vec<Bettor> {
             .unwrap();
     bettors
 }
-fn get_num_bettors(env: &Env, bet_id: u32) -> u32 {
-    let bettors = get_bettors(&env, bet_id);
-    bettors.len()
+
+fn get_contract_id(env: &Env) -> Identifier {
+    Identifier::Contract(env.get_current_contract().into())
 }
 
-fn  get_winners(env: &Env, bet_id: u32, bet_result: BetResult) -> Vec<Bettor> {
+fn  decode_result(env: &Env, bet_id: u32, bet_result: BetResult) ->(Vec<Bettor>, BigInt, BigInt) {
     let bettors = get_bettors(&env, bet_id);
     let mut winners: Vec<Bettor> = vec![&env];
-    
+    let mut total_winning_bet_amount = BigInt::zero(env);
+    let mut total_losing_bet_amount = BigInt::zero(env);
+
     for bettor in bettors.iter() {
-        let unwrappwed_bettor = bettor.unwrap();
-        if unwrappwed_bettor.bet_result == bet_result {
-            // winnder ! 
-            let winner = unwrappwed_bettor;
+        let unwrapped_bettor = bettor.unwrap();
+
+        if unwrapped_bettor.bet_result == bet_result {
+            let winner = unwrapped_bettor.clone();
             winners.push_back(winner);
+            total_winning_bet_amount = total_winning_bet_amount + &unwrapped_bettor.amount;
+        } else {
+            total_losing_bet_amount = total_losing_bet_amount + &unwrapped_bettor.amount;
         }
     }
-    winners
+    (winners, total_winning_bet_amount, total_losing_bet_amount)
+}
+
+fn transfer_from_account_to_contract(
+    env: &Env,
+    token_id: &BytesN<32>,
+    from: &Identifier,
+    amount: &BigInt,
+) {
+    let client = token::Client::new(&env, token_id);
+    let bet_contract_id = get_contract_id(env);
+   
+    client.xfer_from(
+        &Signature::Invoker,
+        &BigInt::zero(env),
+        &from,
+        &bet_contract_id,
+        &amount,
+    );
+
+}
+
+fn transfer_from_contract_to_account(env: &Env, token_id: &BytesN<32>, to: &Identifier, amount: &BigInt,) {
+    let client = token::Client::new(&env, token_id);
+    
+    client.xfer(&Signature::Invoker, &BigInt::zero(&env), to, amount);
+}
+
+fn update_winners_balance(env: &Env, token: &BytesN<32>,winners: &Vec<Bettor>, total_winning_bet_amount: &BigInt, total_losing_bet_amount: &BigInt) {
+    // for all winners, transfer their gain
+    for winner in winners.clone() {
+        let unwrapped_winner = winner.unwrap();
+    
+        // gain = PlayerBetAmount + ( (PlayerBetAmount / TotalWinningBetAmount) * TotalLosingBetAmount)
+        let gain = &unwrapped_winner.amount + ((&unwrapped_winner.amount / total_winning_bet_amount) * total_losing_bet_amount);
+    
+        // xfer from gain from contract to  bettor
+        let to_id = address_to_id(unwrapped_winner.bettor_id);
+        transfer_from_contract_to_account(&env, &token, &to_id, &gain);
+    }
 }
 
 pub struct BetContract;
@@ -126,6 +189,7 @@ pub struct BetContract;
 impl BetContract {
     pub fn create_bet(
         env: Env,
+        token: BytesN<32>,
         team_a: Symbol,
         team_b: Symbol
     ) -> u32 {
@@ -136,10 +200,10 @@ impl BetContract {
 
         let status = BetStatus::Open;
         let bet =  Bet {
+            token,
             status,
             team_a,
-            team_b,
-        };
+            team_b        };
 
         env.data()
             .set(
@@ -150,22 +214,81 @@ impl BetContract {
         bet_id
     }
 
-    pub fn get_status(env: Env, bet_id: u32) -> BetStatus {
+    // deposit shares into the vault: mints the vault shares to "from"
+    pub fn place_bet(env: Env, token: BytesN<32>,
+        bet_id: u32, bet_result: BetResult, amount: BigInt)  {
+
+        // bet shoud be in a status that allozs placing bets
+        let bet = get_bet(&env, bet_id);
+
+        if BetStatus::Open != bet.status  {
+            panic_error!(&env, Error::InvalidBetStatus);
+        }
+
+        // bettor should not be the bet owner
+        let invoker_id = env.invoker();
+        let bet_owner_id = get_bet_owner_id(&env, bet_id);
+        if invoker_id == bet_owner_id {
+            panic_error!(&env, Error::BetActionNotAllowed);
+        }
+
+        // get bettor details
+        let bettor_id = env.invoker();
+
+        let bettor = Bettor {
+            bettor_id: bettor_id.clone(),
+            bet_result,
+            amount: amount.clone()
+        };  
+
+        // add it to the list
+        let mut bettors = get_bettors(&env, bet_id);
+        bettors.push_back(bettor);
+
+        env.data()
+            .set(
+                DataKey::Bettors(bet_id),
+                bettors
+            );   
+        
+        // transfer the bet amount to the contract
+        let from_id = address_to_id(env.invoker());
+        transfer_from_account_to_contract(&env, &token, &from_id, &amount);
+    }
+
+
+    pub fn bet_result(env: Env, bet_id: u32, bet_result: BetResult) {
 
         if  !bet_exists(&env, bet_id)  {
             panic_error!(&env, Error::BetNotFound);
+        } 
+
+        let bet = get_bet(&env, bet_id);
+        if BetStatus::Close != bet.status {
+            panic_error!(&env, Error::InvalidBetStatus);
         }
-        
+
+        // invoker must be the bet owner
+        let invoker_id = env.invoker();
+        let bet_owner_id = get_bet_owner_id(&env, bet_id);
+        if invoker_id != bet_owner_id {
+            panic_error!(&env, Error::BetActionNotAllowed);
+        }
+  
+        let (winners, total_winning_bet_amount, total_losing_bet_amount) = decode_result(&env, bet_id, bet_result);
+ 
+        update_winners_balance(&env, &bet.token, &winners, &total_winning_bet_amount, &total_losing_bet_amount);
+
+    }
+
+    pub fn get_status(env: Env, bet_id: u32) -> BetStatus {
+
         let bet = get_bet(&env, bet_id);
         bet.status
     }
 
     pub fn set_status(env: Env, bet_id: u32, status: BetStatus) {
-
-        if  !bet_exists(&env, bet_id)  {
-            panic_error!(&env, Error::BetNotFound);
-        }
-
+        
         let mut bet = get_bet(&env, bet_id);
         bet.status = status;
 
@@ -175,59 +298,7 @@ impl BetContract {
             bet    
         );   
     }
-    // deposit shares into the vault: mints the vault shares to "from"
-    pub fn place_bet(env: Env, bet_id: u32, bet_result: BetResult, amount: BigInt)  {
-        
-        if  bet_exists(&env, bet_id)  {
-            panic_error!(&env, Error::BetNotFound);
-        } 
-        
-        let bet = get_bet(&env, bet_id);
-        if bet.status != BetStatus::Open {
-            panic_error!(&env, Error::InvalidBetStatus);
-        }
 
-        let mut bettors = get_bettors(&env, bet_id);
-
-        let bettor_id = env.invoker();
-        let bettor = Bettor {
-            bettor_id,
-            bet_result,
-            amount
-        };  
-
-        bettors.push_back(bettor);
-
-        env.data()
-            .set(
-                DataKey::Bettors(bet_id),
-                bettors
-            );   
-        // token xfer
-        // Should transfer occurs between the bettor_id and the bet_owner_id
-        // or between the bettor_id and the contract_id ?
-    }
-
-
-    pub fn bet_result(env: Env, bet_id: u32, bet_result: BetResult) {
-        if  bet_exists(&env, bet_id)  {
-            panic_error!(&env, Error::BetNotFound);
-        } 
-        
-        let bet = get_bet(&env, bet_id);
-        if bet.status != BetStatus::Close {
-            panic_error!(&env, Error::InvalidBetStatus);
-        }
-
-        let winners = get_winners(&env, bet_id, bet_result);
-
-        // get num winncers
-        let num_winners = winners.len();
-        let num_bettors = get_num_bettors(&env, bet_id);
-
-        // for all winners, ransfer their gain
-
-    }
 }
 
 mod test;

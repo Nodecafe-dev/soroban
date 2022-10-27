@@ -16,6 +16,7 @@ soroban-auth = "0.1.0"
 [dev_dependencies]
 soroban-sdk = { version = "0.1.0", features = ["testutils"] }
 soroban-auth = { version = "0.1.0", features = ["testutils"] }
+rand = { version = "0.8.5" }
 
 [profile.release]
 opt-level = "z"
