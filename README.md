@@ -8,8 +8,8 @@ At the moment it's limited to bet on the winning team (or a draw).
 ### 1 - Create a bet : fn create_bet
 The first step is to create the bet. A bet owner will provide the 2 teams involved in the game.
 
-Once the bet is create, it is assigned a unique bet_id to identify it. 
-The status of the bet is open, meaning people can start placing bet.
+Once the bet is created, it is assigned a unique bet_id to identify it. 
+The status of the bet is open, meaning people can start placing bets.
 
 ### 2 - Place a bet: fn place_bet
 The bet owner is not allowed to place bets. 
@@ -26,9 +26,11 @@ The gain for the winners is calculated as below:
 
 PlayerBetAmount + ( (PlayerBetAmount / TotalWinningBetAmount) * TotalLosingBetAmount)
 
+Amount is transfered from the contract account to the winner account.
+
 ## Possible improvements:
 - add other types of bet (i.e. game final score, name of the first scorer ...)
-- instead of having only the bet owner to provide the bet result define multiple trusted sources. 
+- instead of having only the bet owner to provide the bet result, define multiple trusted sources. 
 Bet result will only be validated if all sources have provided the same result.
 These sources could be connected to different sport feeds.
 This could be achieved via multisig.
